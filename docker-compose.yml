@@ -1,0 +1,219 @@
+version: "3"
+
+services:
+  postgres:
+    container_name: 'postgres'
+    image: "debezium/postgres:14"
+    profiles:
+      - setup
+    environment:
+      PGUSER: "postgres"
+      POSTGRES_USER: "postgres"
+      POSTGRES_PASSWORD: "postgres"
+      POSTGRES_DB: "postgres"
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready" ]
+      interval: 1s
+      retries: 15
+      timeout: 10s
+
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: pgadmin
+    profiles:
+      - setup
+    environment:
+      PGADMIN_DEFAULT_EMAIL: "admin@pg.com"
+      PGADMIN_DEFAULT_PASSWORD: "admin"
+    ports:
+      - "80:80"
+    depends_on:
+      - postgres
+
+  migrations:
+    container_name: 'migrations'
+    image: "migrate/migrate"
+    profiles:
+      - setup
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - "${MIGRATIONS_PATH}:/migrations"
+    command:
+      - "-path"
+      - "/migrations/"
+      - "-database"
+      - "postgres://postgres:postgres@postgres:5432/postgres?sslmode=disable&search_path=public"
+      - "up"
+
+  zookeeper:
+    container_name: "zookeeper"
+    image: confluentinc/cp-zookeeper:latest
+    profiles:
+      - setup
+    environment:
+      ZOOKEEPER_CLIENT_PORT: 32181
+      ZOOKEEPER_TICK_TIME: 2000
+
+  kafka:
+    container_name: "kafka"
+    image: confluentinc/cp-enterprise-kafka:latest
+    profiles:
+      - setup
+    depends_on:
+      - zookeeper
+    environment:
+      KAFKA_BROKER_ID: 1
+      KAFKA_ZOOKEEPER_CONNECT: zookeeper:32181
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,PLAINTEXT_HOST:PLAINTEXT
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092,PLAINTEXT_HOST://localhost:29092
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 100
+
+  kafka-schema-registry:
+    container_name: "kafka-schema-registry"
+    image: confluentinc/cp-schema-registry:latest
+    profiles:
+      - setup
+    depends_on:
+      - zookeeper
+      - kafka
+    environment:
+      SCHEMA_REGISTRY_HOST_NAME: kafka-schema-registry
+      SCHEMA_REGISTRY_KAFKASTORE_BOOTSTRAP_SERVERS: PLAINTEXT://kafka:9092
+      SCHEMA_REGISTRY_LISTENERS: http://0.0.0.0:8081
+
+  kafka-connect:
+    # image: confluentinc/cp-kafka-connect:latest
+    build:
+      context: jdbc
+    container_name: kafka-connect
+    profiles:
+      - setup
+    ports:
+      - "8083:8083"
+    environment:
+      CONNECT_CONFIG_STORAGE_TOPIC: configs
+      CONNECT_OFFSET_STORAGE_TOPIC: offsets
+      CONNECT_STATUS_STORAGE_TOPIC: statuses
+      CONNECT_BOOTSTRAP_SERVERS: kafka:9092
+      CONNECT_REST_PORT: 8083
+      CONNECT_GROUP_ID: jdbc-test
+      CONNECT_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_INTERNAL_KEY_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_INTERNAL_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_VALUE_CONVERTER: org.apache.kafka.connect.json.JsonConverter
+      CONNECT_REST_ADVERTISED_HOST_NAME: localhost
+      CONNECT_PLUGIN_PATH: /usr/share/java,/usr/share/confluent-hub-components
+      CONNECT_CONFLUENT_TOPIC_REPLICATION_FACTOR: 1
+      CONNECT_CONFIG_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_OFFSET_STORAGE_REPLICATION_FACTOR: 1
+      CONNECT_STATUS_STORAGE_REPLICATION_FACTOR: 1
+      CLASSPATH: /usr/share/confluent-hub-components/confluentinc-kafka-connect-jdbc/lib/
+    depends_on:
+      - kafka-schema-registry
+      - postgres
+    volumes:
+      - "./jdbc:/body"
+    healthcheck:
+      test: 'curl -i -X POST -H "Accept:application/json" -H  "Content-Type:application/json" http://localhost:8083/connectors/ -d @/body/register.json || exit 1'
+      interval: 1s
+      retries: 10
+      timeout: 10s
+
+  #  control-center:
+  #    image: confluentinc/cp-enterprise-control-center:7.1.0
+  #    hostname: control-center
+  #    container_name: control-center
+  #    depends_on:
+  #      - kafka
+  #      - kafka-schema-registry
+  #      - kafka-connect
+  #    volumes:
+  #        - "./jdbc:/body"
+  #    ports:
+  #      - "9021:9021"
+  #    environment:
+  #      CONTROL_CENTER_BOOTSTRAP_SERVERS: 'kafka:9092'
+  #      CONTROL_CENTER_CONNECT_CONNECT-DEFAULT_CLUSTER: 'kafka-connect:8083'
+  #      CONTROL_CENTER_SCHEMA_REGISTRY_URL: "http://kafka-schema-registry:8081"
+  #      CONTROL_CENTER_REPLICATION_FACTOR: 1
+  #      CONTROL_CENTER_INTERNAL_TOPICS_PARTITIONS: 1
+  #      CONTROL_CENTER_MONITORING_INTERCEPTOR_TOPIC_PARTITIONS: 1
+  #      CONFLUENT_METRICS_TOPIC_REPLICATION: 1
+  #      PORT: 9021
+  #    healthcheck:
+  #      test: 'curl -i -X POST -H "Accept:application/json" -H  "Content-Type:application/json" http://localhost:9021/connectors/ -d @/body/register.json || exit 1'
+  #      interval: 1s
+  #      retries: 60
+  #      timeout: 60s
+
+  kafdrop:
+    container_name: "kafdrop"
+    image: "obsidiandynamics/kafdrop"
+    profiles:
+      - setup
+    environment:
+      KAFKA_BROKERCONNECT: "kafka:9092"
+    ports:
+      - 9000:9000
+    depends_on:
+      - kafka-connect
+
+  app-server:
+    container_name: 'app-server'
+    build:
+      context: app
+      args:
+        BINARY_PATH: ${BIN}
+    profiles:
+      - setup
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrations:
+        condition: service_completed_successfully
+      kafka-connect:
+        condition: service_healthy
+    environment:
+      HTTP_SERVER_ADDRESS: "0.0.0.0:3000"
+      DATABASE_NAME: "postgres"
+      DATABASE_USER: "postgres"
+      DATABASE_PASSWORD: "postgres"
+      DATABASE_HOST: "postgres"
+      DATABASE_PORT: "5432"
+    ports:
+      - "3100:3100"
+    healthcheck:
+      test: curl --fail http://localhost:3000/health || exit 1
+      interval: 1s
+      retries: 10
+      timeout: 10s
+  setup-lock:
+    container_name: 'setup-lock'
+    profiles:
+      - setup
+    image: docker/whalesay
+    depends_on:
+      app-server:
+        condition: service_healthy
+  load-test:
+    container_name: 'load-test'
+    image: grafana/k6
+    profiles:
+      - test
+    volumes:
+      - "./loadtest:/loadtest"
+    command: run /loadtest/loadtest.js --rps $RPS --duration $DURATION --vus $VUS
+  load-test-lock:
+    container_name: 'test-lock'
+    image: docker/whalesay
+    profiles:
+      - test
+    depends_on:
+      load-test:
+        condition: service_completed_successfully

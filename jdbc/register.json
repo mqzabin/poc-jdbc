@@ -1,0 +1,42 @@
+{
+	"name": "app-jdbc",
+	"config": {
+		"_comment": "The JDBC connector class. Don't change this if you want to use the JDBC Source.",
+		"connector.class": "io.confluent.connect.jdbc.JdbcSourceConnector",
+
+		"_comment": "Will produce the 'events' table, using 'id' column as the reference incremental column. It'll only detect new rows.",
+		"mode":"incrementing",
+		"table.whitelist": "events",
+		"incrementing.column.name": "id",
+		"batch.max.rows": "1000",
+
+		"_comment": "Connection settings",
+		"connection.url": "jdbc:postgresql://postgres:5432/postgres",
+		"connection.user": "postgres",
+		"connection.password": "postgres",
+		"connection.attempts": 3,
+		"connection.backoff": 10000,
+
+		"_comment": "Kafka configs",
+		"topic.prefix": "app-jdbc-",
+		"poll.interval.ms" : 1000,
+
+		"_comment": "Partition key settings",
+		"_comment": "The idea below is to use 'user_id' as partition key, to ensure ordering.",
+		"_comment": "The setting 'topic.creation.default.partitions' could be used here, but for some reason, it's not working in this setup.",
+		"transforms":"createKey,extractInt",
+		"transforms.createKey.type":"org.apache.kafka.connect.transforms.ValueToKey",
+		"transforms.createKey.fields":"user_id",
+		"transforms.extractInt.type":"org.apache.kafka.connect.transforms.ExtractField$Key",
+		"transforms.extractInt.field":"user_id",
+
+		"_comment": "Disabling JSON schema in message content",
+		"key.converter": "org.apache.kafka.connect.json.JsonConverter",
+		"key.converter.schemas.enable":"false",
+		"value.converter": "org.apache.kafka.connect.json.JsonConverter",
+		"value.converter.schemas.enable": "false",
+
+		"_comment": "If the column is not defined as NOT NULL, tell the connector to ignore this",
+		"validate.non.null": "false"
+	}
+}
